@@ -1,0 +1,7 @@
+{
+  "project": "POTIFY Telegram Editorial Kit",
+  "kind": "Recovered bot source and offline review tool",
+  "source": "potify_telegram_bot_starter.zip and potify_telegram_iphone_kit.zip. Original Python bot, dependency list and project brief are retained as inert historical reference files. The active local CLI only fingerprints user-supplied text.",
+  "scope": "The historical starter describes automated posting. The shipped review tool is offline. Current publishing remains subject to Chance’s approval.",
+  "prepared": "2026-11-25"
+}

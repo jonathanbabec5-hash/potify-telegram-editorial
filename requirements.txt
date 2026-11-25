@@ -1,0 +1,1 @@
+# Python 3.10 or newer. The offline review tool uses the standard library.

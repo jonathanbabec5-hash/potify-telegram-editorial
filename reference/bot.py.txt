@@ -1,0 +1,189 @@
+"""POTIFY Telegram auto-poster: OpenAI Responses API + PTB JobQueue."""
+
+import asyncio
+import json
+import logging
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
+from telegram import Update
+from telegram.constants import ChatMemberStatus
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+HERE = Path(__file__).resolve().parent
+load_dotenv(HERE / ".env")  # Local only; hosting providers can use Secrets.
+
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+OPENAI_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+CHAT_ID_TEXT = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+CHAT_ID = int(CHAT_ID_TEXT) if CHAT_ID_TEXT else None
+MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
+POST_INTERVAL_HOURS = float(os.getenv("POST_INTERVAL_HOURS", "4"))
+AUTO_POST = os.getenv("AUTO_POST", "false").strip().lower() == "true"
+
+HISTORY_PATH = HERE / ".state.json"
+BRIEF_PATH = HERE / "content_brief.txt"
+POST_LOCK = asyncio.Lock()  # Prevent two simultaneous posts.
+
+TOPICS = [
+    "An authentic GM or community welcome",
+    "A thoughtful question for community members",
+    "What the real living-soil grow documentation is about",
+    "The Vape God browser game and its non-transferable in-game Seeds",
+    "POTIFY Plant Doctor: careful observation over miracle cures",
+    "The POTIFY Chronicles and the project's original storytelling",
+    "An invitation to creators interested in the upcoming creator program",
+    "A transparent, non-price-focused Solana community update",
+]
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("potify_bot")
+
+
+def load_history() -> dict:
+    """Remember recent posts locally to reduce repeats after a restart."""
+    try:
+        data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+        return {"count": int(data["count"]), "recent": list(data["recent"])}
+    except (OSError, KeyError, TypeError, ValueError):
+        return {"count": 0, "recent": []}
+
+
+def save_history(history: dict) -> None:
+    tmp = HISTORY_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(HISTORY_PATH)
+
+
+async def publish_post(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Generate one original post, send it, then record its successful delivery."""
+    if CHAT_ID is None:
+        log.warning("No TELEGRAM_CHAT_ID set; skipping publication.")
+        return
+
+    async with POST_LOCK:
+        try:
+            history = load_history()
+            topic = TOPICS[history["count"] % len(TOPICS)]
+            recent = "\n---\n".join(history["recent"][-3:]) or "None yet"
+            brief = BRIEF_PATH.read_text(encoding="utf-8")
+
+            response = await context.application.bot_data["openai"].responses.create(
+                model=MODEL,
+                instructions=(
+                    "You write messages for POTIFY's own Telegram community. "
+                    "Sound human, specific, warm, and concise; never formulaic or cringe. "
+                    "Use only the verified facts supplied; do not invent current prices, "
+                    "returns, airdrops, partnerships, launch announcements, or live news. "
+                    "Do not promise profits or encourage coordinated trading. "
+                    "Do not claim that upcoming features have launched. "
+                    "Vary structure, opening, and ending. "
+                    "Write only one ready-to-publish plain-text Telegram message "
+                    "of 45-110 words, with at most one link. No headings or explanations."
+                ),
+                input=(
+                    f"FOCUS: {topic}\n\nVERIFIED PROJECT BRIEF:\n{brief}\n\n"
+                    f"AVOID REPEATING THESE RECENT POSTS:\n{recent}"
+                ),
+                max_output_tokens=350,
+            )
+            post = response.output_text.strip()
+            if not post:
+                raise ValueError("OpenAI returned an empty post")
+            if len(post) > 4096:
+                raise ValueError("Generated post exceeds Telegram's text limit")
+            if post in history["recent"]:
+                raise ValueError("OpenAI repeated an earlier post; skipping")
+
+            message = await context.bot.send_message(
+                chat_id=CHAT_ID, text=post, disable_web_page_preview=True
+            )
+            log.info("Posted to chat %s, Telegram message ID %s", CHAT_ID, message.message_id)
+
+            history["count"] += 1
+            history["recent"] = (history["recent"] + [post])[-5:]
+            try:
+                save_history(history)
+            except OSError:
+                log.exception("Post sent, but local history could not be saved")
+        except Exception:
+            # Never post fabricated fallback content when generation fails.
+            log.exception("Post generation or Telegram delivery failed")
+
+
+async def chatid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """In your Telegram group, type /chatid to discover its numeric ID."""
+    chat = update.effective_chat
+    if chat is None or update.effective_message is None:
+        return
+    if chat.type not in ("group", "supergroup"):
+        await update.effective_message.reply_text("Add me to your group, then type /chatid there.")
+        return
+    await update.effective_message.reply_text(
+        f"This group's Chat ID is: {chat.id}\n"
+        "Set TELEGRAM_CHAT_ID to this number and restart the bot."
+    )
+
+
+async def postnow_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Only administrators in the configured group can request a test post."""
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat is None or user is None or update.effective_message is None:
+        return
+    if CHAT_ID is None or chat.id != CHAT_ID:
+        await update.effective_message.reply_text("This is not the configured posting group.")
+        return
+    try:
+        member = await context.bot.get_chat_member(chat_id=chat.id, user_id=user.id)
+        allowed = member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception:
+        log.exception("Could not verify group admin permission")
+        await update.effective_message.reply_text("Could not verify admin status. Make me a group admin.")
+        return
+    if not allowed:
+        await update.effective_message.reply_text("Only group administrators can use /postnow.")
+        return
+    await update.effective_message.reply_text("Generating one post now...")
+    await publish_post(context)
+
+
+def main() -> None:
+    if not BOT_TOKEN or not OPENAI_KEY:
+        raise SystemExit("Set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY in .env or Secrets.")
+    if POST_INTERVAL_HOURS <= 0:
+        raise SystemExit("POST_INTERVAL_HOURS must be greater than zero.")
+    if not BRIEF_PATH.is_file():
+        raise SystemExit("Missing content_brief.txt next to bot.py")
+
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.bot_data["openai"] = AsyncOpenAI(api_key=OPENAI_KEY, timeout=45.0, max_retries=2)
+    app.add_handler(CommandHandler("chatid", chatid_command))
+    app.add_handler(CommandHandler("postnow", postnow_command))
+
+    if AUTO_POST and CHAT_ID is not None:
+        if app.job_queue is None:
+            raise SystemExit('Install: pip install "python-telegram-bot[job-queue]"')
+        seconds = POST_INTERVAL_HOURS * 3600
+        app.job_queue.run_repeating(
+            publish_post,
+            interval=seconds,
+            first=seconds,  # First scheduled post is X hours after startup.
+            name="potify_auto_posts",
+            job_kwargs={"max_instances": 1, "coalesce": True},
+        )
+        log.info("Automatic posts ON: chat %s, every %s hours", CHAT_ID, POST_INTERVAL_HOURS)
+    else:
+        log.info("Auto-posting OFF. Use /chatid, then set TELEGRAM_CHAT_ID and AUTO_POST=true.")
+
+    log.info("Bot polling started. Use Ctrl+C to stop.")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
