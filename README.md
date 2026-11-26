@@ -2,6 +2,14 @@
 
 [Complete repository directory tree](docs/DIRECTORY.md)
 
+## Two spaces or a different promise?
+
+A line break added on a phone shouldn’t trick an editor into posting the same message twice. Changing ‘Soil’ to ‘Roots’ really does change the copy. The Telegram Editorial Kit puts those two cases next to one another so the distinction is visible.
+
+The [fingerprint tests](tests/test_review.py) compare those exact examples. The [review utility](src/review.py) runs offline; the historical bot is retained as source reference. A matching fingerprint says something about text, not who authorized it or whether Telegram received it.
+
+Try a line-break-only edit, then change the meaning of one word. Report what matched and what changed using fictional copy. No access token, real conversation, bot deployment or message send is needed.
+
 **Recovered bot source and offline review tool.** Give editors an iPhone-friendly way to inspect a Telegram draft and its duplicate history before publication.
 
 ### Setup and usage
