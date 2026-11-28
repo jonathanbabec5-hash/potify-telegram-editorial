@@ -1,5 +1,13 @@
 # POTIFY Telegram Editorial Kit
 
+## Find your way in
+
+| If you are… | Start here | Try this |
+| --- | --- | --- |
+| An editor | [Inspect the offline review utility](src/review.py) | Compare a formatting change with a meaningful edit. |
+| A developer | [Read fingerprint tests](tests/test_review.py) | Trace the synthetic duplicate examples. |
+| An operations contributor | [Explore the workflow library](https://github.com/jonathanbabec5-hash/potify-operations-workflow) | Review approval states separately from text matching. |
+
 [Complete repository directory tree](docs/DIRECTORY.md)
 
 ## Two spaces or a different promise?
